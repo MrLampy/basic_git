@@ -1,1 +1,1 @@
-print("I love mom")
+print("I love dad")
