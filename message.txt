@@ -1,0 +1,191 @@
+#define BLYNK_PRINT Serial
+#define BLYNK_TEMPLATE_ID "TMPL60Fs1jR0n"
+#define BLYNK_TEMPLATE_NAME "ir remote"
+
+#if defined(ESP8266)
+#include <ESP8266WiFi.h>
+#include <BlynkSimpleEsp8266.h>
+#else
+#include <WiFi.h>
+#endif  // ESP8266
+#if defined(ESP32)
+#include <BlynkSimpleEsp32.h>
+#endif  // ESP32
+
+#include <IRremoteESP8266.h>
+#include <IRrecv.h>
+#include <IRsend.h>
+#include <IRutils.h>
+#include <ir_MitsubishiHeavy.h>
+
+// ✅ GPIO PINs
+const int analogPin = 32;
+const uint16_t RECV_PIN = 15;
+const uint16_t IR_PIN = 4;
+const uint16_t kIrLed = 4;
+
+// ✅ IR Components
+IRrecv irrecv(RECV_PIN);
+IRsend irsend(IR_PIN);
+IRMitsubishiHeavy88Ac ac(kIrLed);
+
+decode_results results;
+String lastRawData = "";
+
+// ✅ Blynk Credentials
+char auth[] = "fdqNX1oNo-61HjJq2ZCKYwAMbJ2nPTxB";
+char ssid[] = "HardwareLab";
+char pass[] = "hwlab504";
+
+// ✅ AC Control Variables
+int lastAnalogValue = -1;
+int temp = 25;
+int fan = 1;
+int mode = kMitsubishiHeavyCool;
+
+// ✅ 7-Segment Display Pins
+const int segmentPins[] = {15, 2, 12, 13, 14, 18, 19, 21}; // A, B, C, D, E, F, G, DP
+const int digitPins[] = {16, 17}; // Two-digit display
+
+const int cutoffValue = 2000;
+
+// ✅ Number Representation for 7-Segment Display
+const byte numbers[10] = {
+  0b00111111, // 0
+  0b00000110, // 1
+  0b01011011, // 2
+  0b01001111, // 3
+  0b01100110, // 4
+  0b01101101, // 5
+  0b01111101, // 6
+  0b00000111, // 7
+  0b01111111, // 8
+  0b01101111  // 9
+};
+
+// ✅ BLYNK_WRITE for IR Replay (V7)
+BLYNK_WRITE(V7) {
+  if (param.asInt() == 1 && !lastRawData.isEmpty()) {
+    Serial.println("Sending Last Stored IR Signal...");
+    
+    uint16_t rawData[100]; 
+    int len = 0;
+    char *ptr = strtok(&lastRawData[0], ",");
+    
+    while (ptr != NULL && len < 100) {
+      rawData[len++] = atoi(ptr);
+      ptr = strtok(NULL, ",");
+    }
+
+    irsend.sendRaw(rawData, len, 38);
+    Serial.println("IR Signal Sent!");
+  }
+}
+
+// ✅ BLYNK_WRITE for Power Control (V2)
+BLYNK_WRITE(V2) {
+  if (param.asInt() == 1) {
+    Serial.println("Turning ON AC");
+    ac.on();
+  } else {
+    Serial.println("Turning OFF AC");
+    ac.off();
+  }
+  ac.setTemp(temp);
+  ac.setFan(fan);
+  ac.setMode(mode);
+  ac.send();
+}
+
+// ✅ BLYNK_WRITE for Temperature (V4) + Update 7-Segment Display
+BLYNK_WRITE(V4) {
+  temp = param.asInt();
+  Serial.print("Setting temperature to: ");
+  Serial.println(temp);
+  ac.setTemp(temp);
+  ac.send();
+}
+
+// ✅ BLYNK_WRITE for Fan Speed (V3)
+BLYNK_WRITE(V3) {
+  fan = param.asInt();
+  Serial.print("Setting fan speed to: ");
+  Serial.println(fan);
+  ac.setFan(fan);
+  ac.send();
+}
+
+// ✅ Store and Send IR Data
+void receiveIR() {
+  if (irrecv.decode(&results)) {
+    Serial.print("Received IR Code: ");
+    Serial.println(results.value, HEX);
+
+    lastRawData = "";
+    for (int i = 0; i < results.rawlen; i++) {
+      lastRawData += String(results.rawbuf[i]) + ",";
+    }
+
+    Blynk.virtualWrite(V1, lastRawData);  
+    Serial.println("IR Data Stored in V1");
+    irrecv.resume();
+  }
+}
+
+// ✅ Read Analog Sensor
+void checkAnalogValue() {
+  int analogValue = analogRead(analogPin);
+  
+  if (analogValue != lastAnalogValue) {
+    int valueToSend = (analogValue > cutoffValue + 500) ? 1 : (analogValue < cutoffValue - 500) ? 0 : -1;
+    if (valueToSend != -1) {
+      Serial.println("Analog Read Changed: Sending " + String(valueToSend) + " to Blynk.");
+      Blynk.virtualWrite(V5, valueToSend);
+      lastAnalogValue = analogValue;
+    }
+  }
+}
+
+// ✅ Display Temperature on 7-Segment
+void updateDisplay() {
+  int digit1 = temp / 10;
+  int digit2 = temp % 10;
+
+  showDigit(digit1, digitPins[0]);
+  delayMicroseconds(500);
+  showDigit(digit2, digitPins[1]);
+  delayMicroseconds(500);
+}
+
+void showDigit(int num, int digitPin) {
+  digitalWrite(digitPin, LOW);
+  for (int i = 0; i < 8; i++) {
+    digitalWrite(segmentPins[i], (numbers[num] >> i) & 1);
+  }
+  digitalWrite(digitPin, HIGH);
+}
+
+// ✅ Setup Function
+void setup() {
+  Serial.begin(115200);
+  analogReadResolution(12);
+
+  Serial.println("Connecting to Blynk...");
+  Blynk.begin(auth, ssid, pass);
+  Serial.println("Blynk Connected!");
+
+  irrecv.enableIRIn();
+  irsend.begin();
+  ac.begin();
+
+  for (int i = 0; i < 8; i++) pinMode(segmentPins[i], OUTPUT);
+  for (int i = 0; i < 2; i++) pinMode(digitPins[i], OUTPUT);
+}
+
+// ✅ Main Loop
+void loop() {
+  Blynk.run();
+  receiveIR();
+  checkAnalogValue();
+  updateDisplay();
+}
